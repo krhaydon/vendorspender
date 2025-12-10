@@ -1,1 +1,1 @@
-This is a library of scripts that I use to quality control assets digitized by a vendor. All of these scripts were written with the assistance of AI, primarily ChatGPT, but tested extensively before adoption. 
+This is a library of scripts that I use to quality control assets - video, audio, images, text - digitized by a vendor. These scripts were written with the assistance of AI, primarily ChatGPT, but tested extensively before adoption. 
