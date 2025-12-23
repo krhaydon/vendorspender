@@ -138,7 +138,7 @@ def write_manifest(dest_root, stamp, tech, dest_hashes, verify, src_chk, dest_ch
 
     manifest = {
         "technician": tech,
-        "created_at": now_stamp()[1],
+        "created_at": now_stamp()[1], 
         "result": overall,
         "checksums": {
             "source": src_chk,
