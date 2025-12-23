@@ -2,47 +2,29 @@
 """
 generate_checksums_manifest.py
 
-Checksum + manifest generator consistent with copy_with_checksums_manifest.py.
+Prompt for technician and package root. Compute SHA-256 checksums for every file
+under the package root (paths relative to package root), write checksums.txt,
+a JSON manifest, and a plain-text receipt under metadata/submissionDocumentation/.
 
-- Prompts for Technician and package root (the already-copied top-level folder).
-- Immediately creates checksums_<stamp>.txt in the package root and appends each SHA-256 line as files are hashed.
-- Writes manifest_<stamp>.json and transfer_receipt_<stamp>.txt in the package root.
-- Progress printed every N files (default 100).
-- Safe: no copying, no deletions.
+Safe: does not modify or delete existing files (it writes new/overwrites the outputs).
 """
 from __future__ import annotations
-import os
-import sys
-import shlex
-import hashlib
-import json
-import time
-import argparse
-import traceback
+import os, sys, hashlib, json, shlex, traceback
 from datetime import datetime
-try:
-    from zoneinfo import ZoneInfo
-except Exception:
-    ZoneInfo = None
 
 CHUNK_SIZE = 16 * 1024 * 1024
-DEFAULT_PROGRESS_INTERVAL = 100
 
 def normalize_path(p: str) -> str:
-    if p is None:
-        return None
+    if p is None: return None
     s = p.strip()
-    if not s:
-        return s
     try:
         toks = shlex.split(s)
-        if toks:
-            s = toks[0]
+        if toks: s = toks[0]
     except Exception:
         pass
     return os.path.abspath(os.path.expanduser(s))
 
-def prompt(text: str, default: str = "") -> str:
+def prompt(text: str, default: str="") -> str:
     try:
         r = input(text)
         if r.strip() == "" and default:
@@ -51,20 +33,12 @@ def prompt(text: str, default: str = "") -> str:
     except EOFError:
         return default
 
-def now_stamp():
-    """Return (stamp, iso_ts). stamp is YYYYMMDD_HHMMSS using America/New_York if available."""
-    if ZoneInfo:
-        try:
-            tz = ZoneInfo("America/New_York")
-            t = datetime.now(tz)
-        except Exception:
-            t = datetime.now()
-    else:
-        t = datetime.now()
-    return t.strftime("%Y%m%d_%H%M%S"), t.isoformat(timespec="seconds")
+def now_stamps():
+    t = datetime.now()
+    return t.isoformat(timespec="seconds"), t.strftime("%Y%m%d_%H%M%S")
 
 def list_files_recursive(root: str):
-    items = []
+    recs = []
     for dirpath, _, filenames in os.walk(root):
         for fn in filenames:
             full = os.path.join(dirpath, fn)
@@ -73,145 +47,111 @@ def list_files_recursive(root: str):
                 size = os.path.getsize(full)
             except OSError:
                 size = None
-            items.append({"rel_path": rel, "size": size})
-    return items
+            recs.append({"rel_path": rel, "size": size})
+    return recs
 
-def compute_sha256_stream(path: str) -> str:
+def compute_sha256(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
         while True:
             chunk = f.read(CHUNK_SIZE)
-            if not chunk:
-                break
+            if not chunk: break
             h.update(chunk)
     return h.hexdigest()
 
-def write_checksums_and_progress(pkg_root: str, relpaths: list, checksums_path: str, interval: int):
-    total = len(relpaths)
-    file_shas = {}
-    start = time.time()
-    with open(checksums_path, "a", encoding="utf-8") as fh:
-        # start header (file exists immediately)
-        fh.write(f"# checksums pass started at {datetime.now().isoformat(timespec='seconds')}\n")
-        fh.flush()
-        for i, rel in enumerate(relpaths, start=1):
-            absfp = os.path.join(pkg_root, rel.replace("/", os.sep))
+def write_checksums(checksums_path: str, base_dir: str, relpaths):
+    with open(checksums_path, "w", encoding="utf-8") as fh:
+        for rel in sorted(relpaths):
+            absfp = os.path.join(base_dir, rel.replace("/", os.sep))
             try:
-                sha = compute_sha256_stream(absfp)
-                file_shas[rel] = sha
-                fh.write(f"{sha}  *{rel}\n")
+                sha = compute_sha256(absfp)
             except Exception as e:
-                file_shas[rel] = None
+                sha = None
+                print(f"WARNING: failed to hash {rel}: {e}", file=sys.stderr)
+            if sha:
+                fh.write(f"{sha}  *{rel}\n")
+            else:
                 fh.write(f"ERROR_NO_SHA  *{rel}\n")
-            fh.flush()
-            if i % interval == 0 or i == total:
-                now = time.time()
-                elapsed = now - start
-                avg = elapsed / i
-                remaining = total - i
-                eta = remaining * avg
-                pct = (i / total) * 100.0
-                elapsed_h = time.strftime("%H:%M:%S", time.gmtime(elapsed))
-                eta_h = time.strftime("%H:%M:%S", time.gmtime(max(0, eta)))
-                print(f"Hashed {i}/{total} ({pct:.1f}%) — elapsed {elapsed_h}, ETA {eta_h}")
-    return file_shas
+    return checksums_path
 
-def write_manifest_and_receipt(pkg_root: str, stamp: str, tech: str, rel_items: list, file_shas: dict):
-    manifest_name = f"manifest_{stamp}.json"
-    receipt_name = f"transfer_receipt_{stamp}.txt"
-    manifest_path = os.path.join(pkg_root, manifest_name)
-    receipt_path = os.path.join(pkg_root, receipt_name)
-    created_iso = datetime.now().isoformat(timespec="seconds")
-    files_section = []
-    for item in sorted(rel_items, key=lambda r: r["rel_path"]):
-        rel = item["rel_path"]
-        files_section.append({
-            "rel_path": rel,
-            "size": item.get("size"),
-            "sha256": file_shas.get(rel)
-        })
-    manifest = {
-        "package_name": os.path.basename(pkg_root.rstrip(os.sep)),
-        "technician": tech,
-        "created_at": created_iso,
-        "stamp": stamp,
-        "file_count": len(files_section),
-        "files": files_section,
-        "status": {"checksums_created": True, "overall": "READY"}
-    }
-    with open(manifest_path, "w", encoding="utf-8") as mf:
-        json.dump(manifest, mf, indent=2)
-    with open(receipt_path, "w", encoding="utf-8") as rf:
-        lines = [
-            "Transfer receipt",
-            f"Package: {os.path.basename(pkg_root.rstrip(os.sep))}",
-            f"Technician: {tech}",
-            f"Created at: {created_iso}",
-            f"Files hashed: {len(files_section)}",
-            f"Checksums file: checksums_{stamp}.txt",
-        ]
-        rf.write("\n".join(lines) + "\n")
-    return manifest_path, receipt_path
+def write_manifest(manifest_path: str, manifest_obj: dict):
+    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(manifest_obj, fh, indent=2)
 
-def parse_args():
-    p = argparse.ArgumentParser(description="Generate checksums and manifest for an existing package root.")
-    p.add_argument("--package", "-p", help="Package root path (top-level copied folder). If omitted, you'll be prompted.")
-    p.add_argument("--technician", "-t", help="Technician name. If omitted, you'll be prompted.")
-    p.add_argument("--progress-interval", "-n", type=int, default=DEFAULT_PROGRESS_INTERVAL, help="Print progress every N files.")
-    return p.parse_args()
+def write_receipt(path: str, package_name: str, technician: str, created_at: str, file_count: int, checksums_rel: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lines = [
+        "Transfer receipt",
+        f"Package: {package_name}",
+        f"Technician: {technician}",
+        f"Created at: {created_at}",
+        f"Files hashed: {file_count}",
+        f"Checksums file: {checksums_rel}",
+    ]
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
 
 def main():
-    args = parse_args()
     try:
-        if args.technician:
-            tech = args.technician
-        else:
-            tech = prompt("Technician name: ").strip()
-            if not tech:
-                print("Technician name required. Aborting."); return
+        tech = prompt("Technician name: ")
+        if not tech:
+            print("Technician name required. Aborting."); return
 
-        pkg_raw = args.package or prompt("Package root directory (the already-copied top folder): ")
+        pkg_raw = prompt("Package root directory (the copied top folder): ")
         pkg = normalize_path(pkg_raw)
         if not pkg or not os.path.isdir(pkg):
             print("ERROR: package root not found or not a directory:", pkg); return
 
-        interval = max(1, int(args.progress_interval))
-
         print("Scanning files under:", pkg)
-        items = list_files_recursive(pkg)
-        total = len(items)
+        files = list_files_recursive(pkg)
+        relpaths = [r["rel_path"] for r in files]
+        total = len(relpaths)
         if total == 0:
-            print("No files found under package root. Nothing to do."); return
-        relpaths = [r["rel_path"] for r in items]
-        print(f"Found {total} files. Creating checksums file and starting hashing pass.")
+            print("No files found under package root. Aborting."); return
+        print(f"Found {total} files. Starting checksum pass (SHA-256). This may take a while.")
 
-        stamp, _ = now_stamp()
-        checksums_name = f"checksums_{stamp}.txt"
-        checksums_path = os.path.join(pkg, checksums_name)
+        created_iso, stamp = now_stamps()
+        checksums_path = os.path.join(pkg, "checksums.txt")
+        write_checksums(checksums_path, pkg, relpaths)
+        print("Checksums written to:", checksums_path)
 
-        # create the checksums file immediately with header
-        with open(checksums_path, "w", encoding="utf-8") as fh:
-            fh.write(f"# checksums file started at {datetime.now().isoformat(timespec='seconds')}\n")
-            fh.write(f"# package: {os.path.basename(pkg.rstrip(os.sep))}\n")
-            fh.write(f"# technician: {tech}\n")
-            fh.flush()
-        print("Checksums file created:", checksums_path)
+        # assemble manifest
+        manifest_dir = os.path.join(pkg, "metadata", "submissionDocumentation")
+        manifest_path = os.path.join(manifest_dir, f"package_manifest_{stamp}.json")
 
-        # run hashing and write progressively
-        file_shas = write_checksums_and_progress(pkg, relpaths, checksums_path, interval)
-        print("Hashing complete.")
+        # read checksums into dict
+        file_shas = {}
+        with open(checksums_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.strip().split()
+                if not parts: continue
+                sha = parts[0]
+                rel = parts[-1]
+                if rel.startswith("*"): rel = rel[1:]
+                file_shas[rel] = sha
 
-        # write manifest and receipt using same stamp
-        manifest_path, receipt_path = write_manifest_and_receipt(pkg, stamp, tech, items, file_shas)
+        manifest = {
+            "package_name": os.path.basename(pkg.rstrip(os.sep)),
+            "technician": tech,
+            "created_at": created_iso,
+            "package_root": pkg,
+            "file_count": total,
+            "files": [{"rel_path": r["rel_path"], "size": r["size"], "sha256": file_shas.get(r["rel_path"])} for r in files],
+            "status": {"checksums_created": True, "overall": "READY"}
+        }
+        write_manifest(manifest_path, manifest)
         print("Manifest written to:", manifest_path)
+
+        receipt_path = os.path.join(manifest_dir, f"transfer_receipt_{stamp}.txt")
+        write_receipt(receipt_path, manifest["package_name"], tech, created_iso, total, os.path.relpath(checksums_path, pkg))
         print("Receipt written to:", receipt_path)
 
-        print("\nDone. Outputs in package root:", pkg)
+        print("\nDone.")
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
     except Exception:
         traceback.print_exc()
-        sys.exit(1)
 
 if __name__ == "__main__":
     main()
