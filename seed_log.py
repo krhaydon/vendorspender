@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Crawl logger (Kelly CSV edition) — updated
+Crawl logger (CSV edition) — updated
 
 - CSV path is provided via command line (--csv) and is required.
 - "Action" vocabulary renamed conceptually to "issues" with new choices.
