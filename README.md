@@ -1,24 +1,24 @@
 ## Overview
 
-This repository contains a library of scripts used to perform quality control (QC) on assets digitized by external vendors. Supported asset types include:
+This repository contains a library of scripts to ease workflows for digital archiving. Systems used:
 
-- **Video**
-- **Audio**
-- **Images**
-- **Text**
+- **Archivematica**
+- **AtoM**
+- **Archive-It**
 
 The scripts help verify file integrity, check technical specifications, evaluate metadata, and streamline the review process for large batches of digitized materials.
 
 ## About the Scripts
 
-The tools in this repository are written in a mix of **BASH** and **Python 3**.  
+The tools in this repository are written in **Python 3**.  
 Many were developed with assistance from **AI tools (primarily ChatGPT)**, and all scripts have been **extensively tested in a UNIX environment** before being adopted into production workflows.
 
 ## Purpose
 
 This library exists to:
 
-- Automate repetitive QC checks  
+- Automate repetitive checks 
+- Create logs and manifests to verify successful transfers and document chain of custody
 - Standardize validation workflows across asset types  
 - Provide transparent, reproducible methods for assessing vendor deliverables  
 - Reduce time spent on manual verification
